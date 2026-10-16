@@ -1,4 +1,4 @@
-# AWS Data Pipeline (S3 + Glue + Athena + Lambda + IAM) — mocked
+# AWS Data Pipeline (S3 + Glue + Athena + Lambda + IAM) 
 
 Standalone copy. All AWS calls run against moto mocks, no account needed.
 
