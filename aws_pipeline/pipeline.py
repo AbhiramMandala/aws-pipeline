@@ -20,7 +20,9 @@ SAMPLE_RAW = (
 
 
 def run_pipeline(cfg: Optional[PipelineConfig] = None,
-                 clients: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                 clients: Optional[Dict[str, Any]] = None,
+                 raw_payload: Optional[bytes] = None,
+                 raw_name: str = "users_001.csv") -> Dict[str, Any]:
     """Build the lake, catalog it, clean it, query it. Returns a summary."""
     cfg = cfg or PipelineConfig()
     clients = clients or {}
@@ -28,7 +30,7 @@ def run_pipeline(cfg: Optional[PipelineConfig] = None,
 
     lake = S3DataLake(cfg, clients.get("s3") or boto3.client("s3", **region_kw))
     lake.ensure_bucket()
-    raw_key = lake.put_raw("users_001.csv", SAMPLE_RAW.encode("utf-8"))
+    raw_key = lake.put_raw(raw_name, raw_payload or SAMPLE_RAW.encode("utf-8"))
 
     iam_client = clients.get("iam") or boto3.client("iam", **region_kw)
     roles = ensure_pipeline_roles(cfg, iam_client)

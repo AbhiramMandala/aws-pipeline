@@ -1,0 +1,231 @@
+# Data-lake stack: S3 + Glue + Lambda + IAM + Athena workgroup.
+# Mirrors aws_pipeline/ (config.py, iam.py, catalog.py) so code and
+# infrastructure stay consistent. No credentials anywhere in this file.
+#
+# Validate locally (no AWS account needed):
+#   python -c "import yaml,sys; yaml.safe_load(open('infrastructure/cloudformation.yaml'))"
+#
+# Deploy (needs AWS credentials with CloudFormation/IAM/S3/Glue/Lambda rights):
+#   aws cloudformation deploy \
+#     --template-file infrastructure/cloudformation.yaml \
+#     --stack-name data-lake-dev \
+#     --parameter-overrides EnvName=dev BucketName=my-data-lake-dev \
+#     --capabilities CAPABILITY_NAMED_IAM
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Student data lake: versioned+encrypted S3, Glue catalog, Lambda S3 trigger, least-privilege IAM, Athena workgroup."
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: "[a-z0-9-]+"
+    Description: Environment tag applied to all resources.
+  BucketName:
+    Type: String
+    AllowedPattern: "[a-z0-9.-]+"
+    Description: Globally unique S3 bucket name for the lake.
+
+Resources:
+  LakeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw/
+                  - Name: suffix
+                    Value: .csv
+            Function: !GetAtt CleaningFunction.Arn
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvName
+      DependsOn: RawUploadPermission
+
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "data-pipeline-glue-role-${EnvName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: glue.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LakeAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ListBucket
+                Effect: Allow
+                Action: [s3:ListBucket]
+                Resource: [!GetAtt LakeBucket.Arn]
+              - Sid: ReadWriteLake
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: [!Sub "${LakeBucket.Arn}/*"]
+              - Sid: GlueCatalog
+                Effect: Allow
+                Action: ["glue:Get*", "glue:Create*", "glue:Update*"]
+                Resource: "*"
+              - Sid: AthenaQueries
+                Effect: Allow
+                Action: [athena:StartQueryExecution, athena:GetQuery*]
+                Resource: "*"
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "data-pipeline-lambda-role-${EnvName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CleaningAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteLogs
+                Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: "arn:aws:logs:*:*:*"
+              - Sid: ReadRaw
+                Effect: Allow
+                Action: [s3:GetObject, s3:ListBucket]
+                Resource: [!GetAtt LakeBucket.Arn, !Sub "${LakeBucket.Arn}/raw/*"]
+              - Sid: WriteStaging
+                Effect: Allow
+                Action: [s3:PutObject]
+                Resource: [!Sub "${LakeBucket.Arn}/staging/*"]
+
+  CleaningFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "users-cleaning-${EnvName}"
+      Runtime: python3.12
+      Handler: lambda_handler.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          # Placeholder: package aws_pipeline/ as a zip for real deploys.
+          # See README "Deploy for real" for the packaging command.
+          def lambda_handler(event, context):
+              raise NotImplementedError("Deploy the aws_pipeline zip, not this stub.")
+      MemorySize: 256
+      Timeout: 60
+      Environment:
+        Variables:
+          LAKE_BUCKET: !Ref BucketName
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvName
+
+  RawUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CleaningFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt LakeBucket.Arn
+
+  # Trigger on raw/ CSV uploads only; outputs land in staging/ so the
+  # function can never re-trigger itself (no recursion loop).
+  RawUploadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CleaningFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt LakeBucket.Arn
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: analytics_db
+
+  UsersTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Name: users
+        TableType: EXTERNAL_TABLE
+        Parameters: { classification: csv }
+        StorageDescriptor:
+          Columns:
+            - { Name: id, Type: string }
+            - { Name: name, Type: string }
+            - { Name: email, Type: string }
+            - { Name: city, Type: string }
+          Location: !Sub "s3://${BucketName}/processed/users/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.serde2.OpenCSVSerde
+            Parameters: { skip.header.line.count: "1" }
+
+  UsersCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: users-crawler
+      Role: !GetAtt GlueRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${BucketName}/raw/users/"
+      Schedule:
+        ScheduleExpression: "cron(0 1 * * ? *)"
+      Tags:
+        Environment: !Ref EnvName
+
+  AnalyticsWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub "analytics-${EnvName}"
+      Description: Serverless SQL over the lake; results to the lake bucket.
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${BucketName}/athena-results/"
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+
+Outputs:
+  BucketName:
+    Value: !Ref BucketName
+  GlueDatabase:
+    Value: !Ref GlueDatabase
+  AthenaWorkgroup:
+    Value: !Ref AnalyticsWorkgroup

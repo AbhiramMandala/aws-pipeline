@@ -1,7 +1,8 @@
 """S3 secure storage: bucket with versioning + default encryption (SSE-S3).
 
 Landing zones are prefixes: raw/ (lands first), staging/ (cleaning),
-processed/ (analytics-ready). All writes use SSE-AES256.
+processed/ (analytics-ready). All writes use SSE-AES256. Public access
+is blocked at the bucket level.
 """
 from typing import Iterator, Optional
 
@@ -35,6 +36,15 @@ class S3DataLake:
             Bucket=self.cfg.bucket,
             ServerSideEncryptionConfiguration={
                 "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
+            },
+        )
+        self.s3.put_public_access_block(
+            Bucket=self.cfg.bucket,
+            PublicAccessBlockConfiguration={
+                "BlockPublicAcls": True,
+                "IgnorePublicAcls": True,
+                "BlockPublicPolicy": True,
+                "RestrictPublicBuckets": True,
             },
         )
         for prefix in (self.cfg.raw_prefix, self.cfg.staging_prefix,

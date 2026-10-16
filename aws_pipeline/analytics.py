@@ -31,6 +31,13 @@ class AthenaRunner:
             "GROUP BY city ORDER BY n DESC LIMIT 10"
         )
 
+    def q_email_domains(self) -> str:
+        return (
+            "SELECT SUBSTR(email, STRPOS(email, '@') + 1) AS domain, COUNT(*) AS n "
+            f"FROM {self.cfg.glue_db}.{self.cfg.table} "
+            "WHERE email LIKE '%@%.%' GROUP BY 1 ORDER BY n DESC LIMIT 10"
+        )
+
     # -- execution --------------------------------------------------------
     def start(self, sql: str) -> str:
         resp = self.athena.start_query_execution(
@@ -73,7 +80,7 @@ class AthenaRunner:
         """Submit the analytics SQL to Athena, compute aggregates from S3."""
         execution_id = self.start(self.q_by_city())
         state = self.wait(execution_id)
-        total, cities = 0, Counter()
+        total, cities, domains = 0, Counter(), Counter()
         for key in lake.list_keys(self.cfg.processed_prefix):
             if not key.lower().endswith(".csv"):
                 continue
@@ -81,5 +88,9 @@ class AthenaRunner:
                 total += 1
                 if row.get("city"):
                     cities[row["city"]] += 1
+                email = (row.get("email") or "")
+                if "@" in email:
+                    domains[email.rsplit("@", 1)[-1].lower()] += 1
         return {"athena_state": state, "total_rows": total,
-                "by_city": dict(cities.most_common(10))}
+                "by_city": dict(cities.most_common(10)),
+                "by_domain": dict(domains.most_common(10))}

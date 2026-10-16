@@ -1,8 +1,8 @@
 """Glue-style ETL: clean raw CSVs in S3, write processed CSVs.
 
-Same cleaning rules as scripts/data_utils (self-contained so this
-package deploys alone): strip whitespace, lowercase emails, drop
-rows missing id/name, drop id duplicates. Streams row-by-row.
+Cleaning rules (self-contained so this package deploys alone):
+strip whitespace, lowercase emails, drop rows missing id/name,
+drop id duplicates. Streams row-by-row.
 """
 import csv
 import io
